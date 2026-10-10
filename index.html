@@ -157,7 +157,7 @@ label.f input,label.f select,.lb+.cb{margin-top:5px}label.f input,label.f select
 [hidden]{display:none!important}
 #auth{position:fixed;inset:0;z-index:999;display:grid;place-items:center;background:linear-gradient(135deg,#0f172a,#312e81 60%,#0891b2);padding:16px}
 .authbox{background:#fff;border-radius:24px;padding:34px 28px;width:100%;max-width:400px;box-shadow:0 30px 70px rgba(0,0,0,.4);text-align:center;animation:pop .3s}
-@media print{nav,main,.modal-bg,#toasts,.topbar{display:none!important}#printArea{display:block!important}body{background:#fff}@page{margin:12mm}}
+@media print{.app,nav,main,.modal-bg,#toasts,.topbar,#auth{display:none!important}#printArea{display:block!important}html,body{background:#fff;margin:0;padding:0;height:auto;min-height:0}@page{margin:12mm}}
 @media(max-width:900px){.app{display:block}nav{position:fixed;top:0;bottom:0;right:0;width:272px;z-index:90;transform:translateX(100%);transition:.25s;height:100vh}nav.open{transform:none;box-shadow:-20px 0 60px rgba(0,0,0,.4)}.topbar{display:flex}main{padding:16px}.hero{grid-template-columns:1fr}.hb{grid-template-columns:90px 1fr 90px}.hero .big{font-size:34px}}
 @media(max-width:520px){.g2{grid-template-columns:1fr}}
 </style>
