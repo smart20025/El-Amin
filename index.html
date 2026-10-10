@@ -353,6 +353,10 @@ const delRec=(arr,id,msg='هتحذف العنصر ده؟')=>{
       modal('مينفعش تحذف عملية الشراء دي',`<p style="margin:0">الورق ده اتستهلك في فواتير، ولو اتحذف المخزن هيبقى بالسالب.<br>الباقي حاليًا <b>${fmt(paperStock().left)}</b> ورقة وعملية الشراء دي <b>${fmt(p.sheets)}</b> ورقة.</p>`,null);
       return}
   }
+  if(arr==='purchases'){
+    const p=db.purchases.find(x=>x.id===id),g=p&&p.kind==='other'&&otherStock()[p.name];
+    if(g&&g.left-n(p.qty)<0){modal('مينفعش تحذف عملية الشراء دي',`<p style="margin:0">الصنف ده اتباع منه، ولو اتحذف المخزن هيبقى بالسالب.<br>المتاح حاليًا <b>${fmt(g.left)}</b> وعملية الشراء دي <b>${fmt(p.qty)}</b>.</p>`,null);return}
+  }
   ask(msg,()=>{db[arr]=db[arr].filter(x=>x.id!==id);save('تم الحذف')});
 };
 
@@ -731,7 +735,7 @@ function purView(){
   return head('المشتريات والمخزن','package','كل مشتريات بتتحسب تكلفة وبتتخصم من الربح',`<button class="btn" onclick="purModal('paper')">${ic('plus')} شراء ورق</button><button class="btn" onclick="purModal('gift')">${ic('plus')} شراء هدايا</button><button class="btn gray" onclick="purModal('other')">${ic('plus')} مشتريات أخرى</button>`)+
   `<div class="kpis">${kpi('layers','إجمالي الورق المشترى',fmt(st.bought)+' ورقة',fmt(st.bought/cs)+' كرتونة')}${kpi('printer','المستهلك في الفواتير',fmt(st.used)+' ورقة','','warn')}${kpi('package','الباقي بالمخزن',fmt(st.left)+' ورقة',fmt(st.left/cs)+' كرتونة',st.left<0?'bad':'ok')}${kpi('wallet','إجمالي المشتريات',fmt(sum(db.purchases,p=>p.total)))}</div>
   <div class="card">${tbl(['التاريخ','المورد','النوع','البيان','الكمية','الإجمالي','المدفوع','المتبقي',''],list.map(p=>{const pd=n(p.paid)+sum(p.pays,x=>x.amount),r=n(p.total)-pd;
-   return `<tr><td>${p.date}</td><td>${esc(p.supplier||'-')}</td><td><span class="bdg ${p.kind==='paper'?'':p.kind==='gift'?'cy':'part'}">${K[p.kind]}</span></td><td><b>${esc(p.name)}</b></td><td>${fmt(p.qty)}${p.kind==='paper'?` كرتونة <small style="color:var(--mut)">(${fmt(p.sheets)} ورقة)</small>`:''}</td><td>${fmt(p.total)}</td><td class="pos">${fmt(pd)}</td><td class="${cls(r)}">${fmt(r)}</td>
+   return `<tr><td>${p.date}</td><td>${esc(p.supplier||'-')}</td><td><span class="bdg ${p.kind==='paper'?'':p.kind==='gift'?'cy':'part'}">${K[p.kind]}</span></td><td><b>${esc(p.name)}</b></td><td>${fmt(p.qty)}${p.kind==='paper'?` كرتونة <small style="color:var(--mut)">(${fmt(p.sheets)} ورقة)</small>`:''}${p.kind==='other'&&otherStock()[p.name]?` <small style="color:var(--mut)">(متاح ${fmt(otherStock()[p.name].left)})</small>`:''}</td><td>${fmt(p.total)}</td><td class="pos">${fmt(pd)}</td><td class="${cls(r)}">${fmt(r)}</td>
    <td><div class="ra">${r>0.001?ab('coins','g',`payDue('p','${p.id}')`,'سداد جزء'):''}${p.kind==='other'?ab('invoice','g',`saleXModal(null,'${p.id}')`,'بيع'):''}${EDIT(`purModal(null,'${p.id}')`)}${DEL(`delRec('purchases','${p.id}','حذف عملية الشراء؟ الورق/الهدايا هتتشال من المخزن.')`)}</div></td></tr>`}),'لسه مفيش مشتريات')}</div>`;
 }
 function purModal(kind,id){
@@ -767,33 +771,56 @@ function salesView(){
    return `<tr><td>${s.date}</td><td><b>${esc(saleWho(s))}</b> <span class="bdg ${s.clientId?'':'part'}">${s.clientId?'عميل':'خارجي'}</span></td><td>${esc(s.name)}</td><td>${fmt(s.qty)}</td><td>${fmt(s.price)}</td><td><b>${fmt(t)}</b></td><td class="pos">${fmt(p)}</td><td class="${cls(r)}">${fmt(r)}</td><td>${payBadge(t,p)}</td>
    <td><div class="ra">${r>0.001?ab('coins','g',s.clientId?`payModal('${s.clientId}',${r2(r)})`:`payExt('${s.id}')`,'تسجيل دفعة'):''}${ab('printer','p',`printSale('${s.id}')`,'طباعة')}${EDIT(`saleXModal('${s.id}')`)}${DEL(`delRec('sales','${s.id}','حذف فاتورة البيع؟')`)}</div></td></tr>`}),'لسه مفيش مبيعات')}</div>`;
 }
+function otherStock(){   // مخزن المشتريات الأخرى = اللي اشتريته - اللي بعته (بالاسم)
+  const m={};
+  db.purchases.filter(p=>p.kind==='other').forEach(p=>{const g=m[p.name]??={name:p.name,bought:0,cost:0,sold:0};g.bought+=n(p.qty);g.cost+=n(p.total)});
+  db.sales.forEach(x=>{if(m[x.name])m[x.name].sold+=n(x.qty)});
+  Object.values(m).forEach(g=>{g.left=g.bought-g.sold;g.avg=g.bought?g.cost/g.bought:0});
+  return m;
+}
+function xAvail(name){const g=otherStock()[name];if(!g)return Infinity;return g.left+(SS.s&&SS.s.name===name?n(SS.s.qty):0)}
+function xInfo(){
+  const nm=SS.it?decodeURIComponent(SS.it):'',g=otherStock()[nm],b=$('#xAv');if(!b)return;
+  b.innerHTML=!nm?'اختار الصنف من المخزن':g?`المتاح في المخزن: <b>${fmt(xAvail(nm))}</b> • تكلفة الوحدة عليك: <b>${fmt(g.avg)}</b>`:'صنف قديم مش موجود في المخزن';
+}
+function xPick(val){
+  SS.it=val;const nm=val?decodeURIComponent(val):'';
+  if(nm&&!n(v('xP'))){const last=[...db.sales].filter(x=>x.name===nm&&n(x.price)).sort((a,b)=>b.date.localeCompare(a.date))[0];if(last)$('#xP').value=last.price}
+  xInfo();xCalc();
+}
 function saleXModal(id,pid){
   const s=id?db.sales.find(x=>x.id===id):null,p=pid?db.purchases.find(x=>x.id===pid):null;
-  const isC=s?!!s.clientId:true;SS={cl:s?s.clientId:''};
+  const isC=s?!!s.clientId:true;SS={cl:s?s.clientId:'',it:s?enc(s.name):(p?enc(p.name):''),s};
+  const st=otherStock(),cur=s?s.name:(p?p.name:'');
+  const items=Object.values(st).filter(g=>g.left>0||g.name===cur).map(g=>({v:enc(g.name),l:`${g.name} — المتاح ${fmt(g.left+(s&&s.name===g.name?n(s.qty):0))}`}));
+  if(s&&!st[s.name])items.push({v:enc(s.name),l:s.name});
   modal(s?'تعديل فاتورة بيع':'فاتورة بيع',
    fld('التاريخ','xD','date',s?s.date:today())+
    `<label class="chk"><input type="checkbox" id="xIsC" ${isC?'checked':''} ${s?'disabled':''} onchange="$('#xCl').hidden=!this.checked;$('#xBy').hidden=this.checked"><span>البيع لعميل عندي</span></label>
     <div id="xCl" ${isC?'':'hidden'}><div class="lb">العميل (اكتب للبحث واختار)</div>${combo('xcl',db.clients.map(c=>({v:c.id,l:c.name})),SS.cl,'اكتب اسم العميل...',val=>{SS.cl=val})}</div>
-    <div id="xBy" ${isC?'hidden':''}>${fld('اسم المشتري (من بره)','xB','text',s?s.buyer:'')}</div>`+
-   fld('الصنف','xN','text',s?s.name:(p?p.name:''))+
+    <div id="xBy" ${isC?'hidden':''}>${fld('اسم المشتري (من بره)','xB','text',s?s.buyer:'')}</div>
+    <div><div class="lb">الصنف من المخزن (اكتب للبحث واختار)</div>${combo('xit',items,SS.it,items.length?'اكتب أو اختار الصنف...':'مفيش أصناف في المخزن — سجّل مشتريات أخرى الأول',xPick)}</div>
+    <div class="sumbox" id="xAv"></div>`+
    `<div class="g2">${fld('الكمية','xQ','number',s?s.qty:(p?p.qty:1),'oninput="xCalc()"')}${fld('سعر البيع للوحدة','xP','number',s?s.price:'','oninput="xCalc()"')}</div>`+
-   (p?`<div class="sumbox">تكلفة الوحدة عليك: <b>${fmt(p.unitCost)}</b></div>`:'')+
    `<div class="sumbox">الإجمالي: <b id="xT">0</b></div>`+
    (s?'':`<div><div class="lb" style="margin-bottom:5px">الدفع</div><div onchange="$('#xPW').hidden=rad('xPay')!=='part'">${segR('xPay',[['full','مدفوع بالكامل'],['due','مستحق (لسه)'],['part','دفع جزء']],'full')}</div></div>
     <div id="xPW" hidden>${fld('المبلغ المدفوع','xPa','number','')}</div>`)+
    fld('ملاحظة','xNt','text',s?s.note:''),()=>{
-    const c=$('#xIsC').checked,q=n(v('xQ')),pr=n(v('xP')),t=q*pr;
+    const c=$('#xIsC').checked,q=n(v('xQ')),pr=n(v('xP')),t=q*pr,name=SS.it?decodeURIComponent(SS.it):'';
     if(c&&!SS.cl){toast('اختار العميل من القائمة','bad');return false}
     if(!c&&!v('xB').trim()){toast('اكتب اسم المشتري','bad');return false}
-    if(!v('xN').trim()||q<=0||pr<=0){toast('كمّل الصنف والكمية والسعر','bad');return false}
-    const o={date:v('xD'),clientId:c?SS.cl:'',buyer:c?'':v('xB').trim(),name:v('xN').trim(),qty:q,price:pr,note:v('xNt')};
+    if(!name){toast('اختار الصنف من المخزن','bad');return false}
+    if(q<=0||pr<=0){toast('كمّل الكمية والسعر','bad');return false}
+    const av=xAvail(name);
+    if(q>av){toast(`الكمية أكبر من المتاح في المخزن (${fmt(av)})`,'bad');return false}
+    const o={date:v('xD'),clientId:c?SS.cl:'',buyer:c?'':v('xB').trim(),name,qty:q,price:pr,note:v('xNt')};
     if(s){Object.assign(s,o);save('تم التعديل');return}
     const mode=rad('xPay')||'full',paid=mode==='full'?t:mode==='due'?0:Math.min(t,n(v('xPa')));
     const rec={id:uid(),pays:[],paid:c?0:paid,...o};db.sales.push(rec);
     if(c&&paid>0)db.payments.push({id:uid(),clientId:SS.cl,date:o.date,amount:paid,note:'دفعة مع بيع: '+o.name});
     save('تم حفظ فاتورة البيع');
   });
-  xCalc();
+  xInfo();xCalc();
 }
 function xCalc(){$('#xT').textContent=fmt(n(v('xQ'))*n(v('xP')))}
 function payExt(id){
