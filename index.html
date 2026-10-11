@@ -255,12 +255,17 @@ function clientStats(id){
   const billed=sum(db.invoices.filter(i=>i.clientId===id),invTotal)+sum(db.sales.filter(s=>s.clientId===id),saleTotal),paid=sum(db.payments.filter(p=>p.clientId===id),p=>p.amount);
   return{billed,paid,due:billed-paid};
 }
-function invPaid(){   // توزيع دفعات العميل على فواتيره ومبيعاته من الأقدم للأحدث
+function invPaid(){   // الدفعات المربوطة بفاتورة تروح لها الأول، والباقي يتوزع من الأقدم للأحدث
   const m={};
-  db.clients.forEach(c=>{let pool=sum(db.payments.filter(p=>p.clientId===c.id),p=>p.amount);
-    [...db.invoices.filter(i=>i.clientId===c.id).map(i=>({id:i.id,date:i.date,t:invTotal(i)})),
+  db.clients.forEach(c=>{
+    const docs=[...db.invoices.filter(i=>i.clientId===c.id).map(i=>({id:i.id,date:i.date,t:invTotal(i)})),
      ...db.sales.filter(s=>s.clientId===c.id).map(s=>({id:s.id,date:s.date,t:saleTotal(s)}))]
-    .sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id)).forEach(d=>{const x=Math.max(0,Math.min(pool,d.t));m[d.id]=x;pool-=x})});
+     .sort((a,b)=>a.date.localeCompare(b.date)||a.id.localeCompare(b.id));
+    const ids=new Set(docs.map(d=>d.id)),direct={};let pool=0;
+    db.payments.filter(p=>p.clientId===c.id).forEach(p=>{if(p.forId&&ids.has(p.forId))direct[p.forId]=(direct[p.forId]||0)+n(p.amount);else pool+=n(p.amount)});
+    docs.forEach(d=>{const x=Math.min(direct[d.id]||0,d.t);m[d.id]=x;pool+=(direct[d.id]||0)-x});
+    docs.forEach(d=>{const x=Math.max(0,Math.min(pool,d.t-m[d.id]));m[d.id]+=x;pool-=x});
+  });
   return m;
 }
 const payState=(t,p)=>p>=t-0.001?'paid':p>0.001?'part':'unpaid';
@@ -295,13 +300,14 @@ const owedNow=()=>sum(payables().filter(x=>x.rem>0.001),x=>x.rem);
 /* الملخص المالي: كل المشتريات والمصروفات بتتخصم بالكامل من الإيراد */
 function fin(f){
   const inv=db.invoices.filter(i=>f(i.date)),rev=sum(inv,invTotal),sheets=sum(inv,invSheets);
+  const cubes=sum(inv,i=>sum(i.lines.filter(l=>l.useCube),l=>l.count)),binds=sum(inv,i=>sum(i.lines.filter(l=>l.useBind),l=>l.count));
   const gs=sum(db.giftSales.filter(x=>f(x.date)),x=>n(x.qty)*n(x.price));
   const ss=sum(db.sales.filter(x=>f(x.date)),saleTotal);
   const P=db.purchases.filter(p=>f(p.date));
   const paper=sum(P.filter(p=>p.kind==='paper'),p=>p.total),gift=sum(P.filter(p=>p.kind==='gift'),p=>p.total),other=sum(P.filter(p=>p.kind==='other'),p=>p.total);
   const maint=sum(db.expenses.filter(e=>f(e.date)&&isMaint(e)),e=>e.amount),exp=sum(db.expenses.filter(e=>f(e.date)&&!isMaint(e)),e=>e.amount);
   const rev2=rev+gs+ss,cost=paper+gift+other+maint+exp;
-  return{rev,gs,ss,rev2,paper,gift,other,maint,exp,cost,net:rev2-cost,sheets,boughtSheets:sum(P.filter(p=>p.kind==='paper'),p=>p.sheets)};
+  return{cubes,binds,rev,gs,ss,rev2,paper,gift,other,maint,exp,cost,net:rev2-cost,sheets,boughtSheets:sum(P.filter(p=>p.kind==='paper'),p=>p.sheets)};
 }
 
 /* ================= الفترة الزمنية ================= */
@@ -449,6 +455,8 @@ function dash(){
    ${kpi('invoice','إيراد الطباعة والتقفيل',fmt(F.rev),'فواتير الفترة','cy')}
    ${kpi('gift','مبيعات الهدايا',fmt(F.gs))}
    ${kpi('tag','مبيعات المشتريات',fmt(F.ss),'','cy')}
+   ${kpi('layers','عدد التكعيب',fmt(F.cubes),'نسخة في الفترة','cy')}
+   ${kpi('package','عدد التقفيل',fmt(F.binds),'نسخة في الفترة','warn')}
    ${kpi('check','المحصَّل من العملاء',fmt(collected),'دفعات الفترة','ok')}
    ${kpi('users','المستحق على العملاء الآن',fmt(totDue),topDue.length+' عميل','bad')}
    ${kpi('clock','عليّ للموردين والصيانة',fmt(owed),'مشتريات ومصروفات لسه مدفعتهاش','bad')}
@@ -555,7 +563,7 @@ function invList(){
 }
 let draft=null;
 const newLine=()=>({name:'',pages:'',count:1,up:1,duplex:false,price:'',useCube:false,cube:'',useBind:false,bind:''});
-function newInv(cid){draft={id:uid(),date:today(),clientId:cid||'',type:'normal',note:'',paidNow:'',lines:[newLine()],isNew:true};go('edit')}
+function newInv(cid){draft={id:uid(),date:today(),clientId:cid||'',type:'normal',note:'',paidFull:false,paidNow:'',lines:[newLine()],isNew:true};go('edit')}
 function editInv(id){draft=JSON.parse(JSON.stringify(db.invoices.find(i=>i.id===id)));go('edit')}
 function cbSetClient(id){draft.clientId=id;render()}
 function editorView(){
@@ -582,7 +590,7 @@ function editorView(){
   ${lines}
   <div class="bar"><button class="btn gray" onclick="addLine()">${ic('plus')} بند / ${bk?'مادة':'صنف'} آخر</button>${bk?`<button class="btn warn" onclick="bookRecall()">${ic('book')} استدعاء من بيانات البوكليت</button>`:''}</div>
   <div class="stick"><div>إجمالي الأوراق: <b id="gs"></b></div><div id="stk"></div><div>إجمالي الفاتورة: <span class="tot" id="gt"></span></div>
-   ${draft.isNew?`<label class="f" style="width:200px">المبلغ المدفوع الآن (اختياري)<input type="number" step="any" data-h="paidNow" value="${draft.paidNow||''}"></label>`:''}
+   ${draft.isNew?`<label class="chk"><input type="checkbox" data-h="paidFull" ${draft.paidFull?'checked':''}><span>دفع الحساب بالكامل</span></label>${draft.paidFull?'':`<label class="f" style="width:210px">أو اكتب الجزء المدفوع (فاضي = مدفعش)<input type="number" step="any" data-h="paidNow" value="${draft.paidNow||''}"></label>`}`:''}
    <div class="ra" style="margin-inline-start:auto"><button class="btn ok" onclick="saveInv(false)">${ic('check')} حفظ</button><button class="btn" onclick="saveInv(true)">${ic('printer')} حفظ وطباعة</button></div></div>`;
 }
 function refreshTotals(){
@@ -610,6 +618,7 @@ $('#main').addEventListener('change',e=>{
     else if(k==='name'){const it=db.items.find(x=>x.name===t.value.trim());   // استدعاء صنف محفوظ
       if(it){Object.assign(l,{pages:it.pages,up:it.up,duplex:it.duplex,price:it.price,cube:it.cube,bind:it.bind,useCube:it.useCube,useBind:it.useBind});render();toast('اتملى من الصنف المحفوظ')}}
   }else if(t.dataset.h==='type'){draft.type=t.value;render()}
+  else if(t.dataset.h==='paidFull'){draft.paidFull=t.checked;render()}
 });
 function saveInv(print){
   if(!draft.clientId){toast('اختار العميل','bad');return}
@@ -625,9 +634,9 @@ function saveInv(print){
   draft.lines=ls.map(l=>({...l,name:l.name.trim()}));
   if(draft.type==='normal')ls.forEach(l=>{const it={name:l.name.trim(),pages:l.pages,up:l.up,duplex:l.duplex,price:l.price,useCube:l.useCube,cube:l.cube,useBind:l.useBind,bind:l.bind};
     const k=db.items.findIndex(x=>x.name===it.name);k>=0?db.items[k]=it:db.items.push(it)});
-  const o={...draft},pn=n(o.paidNow);delete o.isNew;delete o.paidNow;
+  const o={...draft},tot=invTotal(o),pn=o.paidFull?tot:Math.min(tot,n(o.paidNow));delete o.isNew;delete o.paidNow;delete o.paidFull;
   const k=db.invoices.findIndex(i=>i.id===o.id);k>=0?db.invoices[k]=o:db.invoices.push(o);
-  if(pn>0)db.payments.push({id:uid(),clientId:o.clientId,date:o.date,amount:pn,note:'دفعة مع الفاتورة'});
+  if(pn>0)db.payments.push({id:uid(),clientId:o.clientId,date:o.date,amount:pn,note:'دفعة مع الفاتورة',forId:o.id});
   draft=null;state.view='inv';save('تم حفظ الفاتورة');
   if(print)printInvoice(o.id);
 }
@@ -656,6 +665,8 @@ function printStatement(cid){
 
 /* ================= البوكليت ================= */
 const SEC={ar:'عربي',lang:'لغات'};
+const stAr=s=>s.ar!==undefined?n(s.ar):(s.section==='ar'?n(s.students):0);
+const stLg=s=>s.lang!==undefined?n(s.lang):(s.section==='lang'?n(s.students):0);
 const secBadge=s=>`<span class="bdg ${s==='ar'?'':'cy'}">${SEC[s]}</span>`;
 function bookView(){
   const t=state.bt,tabs=[['subjects','المواد',db.subjects.length],['stages','المراحل وأعداد الطلاب',db.stages.length],['lang2','اللغة الثانية (German / French)',db.lang2.length]];
@@ -664,10 +675,17 @@ function bookView(){
     act=`<button class="btn" onclick="subjModal()">${ic('plus')} إضافة مواد</button>`;
     body=`<div class="kpis">${kpi('book','عدد المواد',db.subjects.length)}</div><div class="card">${tbl(['#','المادة',''],db.subjects.map((s,i)=>`<tr><td>${i+1}</td><td><b>${esc(s.name)}</b></td><td><div class="ra">${EDIT(`subjModal('${s.id}')`)}${DEL(`delRec('subjects','${s.id}','حذف المادة؟')`)}</div></td></tr>`),'لسه مفيش مواد — اضغط إضافة مواد')}</div>`;
   }else if(t==='stages'){
-    act=`<button class="btn" onclick="stageModal()">${ic('plus')} إضافة مرحلة</button>`;
-    const tot=sum(db.stages,s=>s.students),ar=sum(db.stages.filter(s=>s.section==='ar'),s=>s.students),lg=sum(db.stages.filter(s=>s.section==='lang'),s=>s.students);
-    body=`<div class="kpis">${kpi('users','إجمالي الطلاب',fmt(tot),'','')}${kpi('users','قسم عربي',fmt(ar),'','cy')}${kpi('users','قسم لغات',fmt(lg),'','warn')}</div>
-    <div class="card">${tbl(['#','المرحلة','القسم','عدد الطلاب',''],db.stages.map((s,i)=>`<tr><td>${i+1}</td><td><b>${esc(s.name)}</b></td><td>${secBadge(s.section)}</td><td>${fmt(s.students)}</td><td><div class="ra">${EDIT(`stageModal('${s.id}')`)}${DEL(`delRec('stages','${s.id}','حذف المرحلة؟')`)}</div></td></tr>`),'لسه مفيش مراحل',`<tr><td colspan="3">الإجمالي</td><td>${fmt(tot)}</td><td></td></tr>`)}</div>`;
+    act=`<button class="btn" onclick="stageAdd()">${ic('plus')} إضافة مرحلة</button>`;
+    const A=sum(db.stages,stAr),L=sum(db.stages,stLg);
+    body=`<div class="kpis" id="stKp">${stKpis()}</div>
+    <div class="card"><div class="tw"><table><thead><tr><th>#</th><th>المرحلة</th><th>عربي</th><th>لغات</th><th>الإجمالي</th><th></th></tr></thead><tbody>
+    ${db.stages.length?db.stages.map((x,i)=>`<tr><td>${i+1}</td>
+      <td><input class="stn" style="min-width:200px" placeholder="اسم المرحلة (مثال: الصف الأول الإعدادي)" value="${esc(x.name)}" oninput="stageEdit('${x.id}','name',this)"></td>
+      <td><input type="number" step="any" inputmode="numeric" style="width:120px" value="${stAr(x)||''}" oninput="stageEdit('${x.id}','ar',this)"></td>
+      <td><input type="number" step="any" inputmode="numeric" style="width:120px" value="${stLg(x)||''}" oninput="stageEdit('${x.id}','lang',this)"></td>
+      <td><b id="stT_${x.id}">${fmt(stAr(x)+stLg(x))}</b></td><td><div class="ra">${DEL(`delRec('stages','${x.id}','حذف المرحلة؟')`)}</div></td></tr>`).join(''):`<tr><td colspan="6" class="emp">لسه مفيش مراحل — اضغط + لإضافة مرحلة</td></tr>`}
+    </tbody><tfoot><tr><td colspan="2">الإجمالي</td><td id="stFA">${fmt(A)}</td><td id="stFL">${fmt(L)}</td><td id="stFT">${fmt(A+L)}</td><td></td></tr></tfoot></table></div>
+    <div class="bar" style="margin:14px 0 0"><button class="btn gray" onclick="stageAdd()">${ic('plus')} مرحلة</button></div></div>`;
   }else{
     act=`<button class="btn" onclick="lang2Modal()">${ic('plus')} إضافة</button>`;
     const g=sum(db.lang2.filter(x=>x.lang==='German'),x=>x.students),f=sum(db.lang2.filter(x=>x.lang==='French'),x=>x.students);
@@ -683,12 +701,28 @@ function subjModal(id){
     if(s){const nm=v('sbN').trim();if(!nm)return false;s.name=nm;save('تم التعديل')}
     else{const L=v('sbN').split('\n').map(x=>x.trim()).filter(Boolean);if(!L.length)return false;L.forEach(nm=>{if(!db.subjects.some(x=>x.name===nm))db.subjects.push({id:uid(),name:nm})});save('تمت الإضافة')}});
 }
-function stageModal(id){
-  const s=id?db.stages.find(x=>x.id===id):null;
-  modal(s?'تعديل مرحلة':'إضافة مرحلة',fld('اسم المرحلة (مثال: الصف الأول الإعدادي)','stN','text',s?s.name:'','list="stageList"')+`<div><div class="lb" style="margin-bottom:5px">القسم</div>${segR('stSec',[['ar','عربي'],['lang','لغات']],s?s.section:'ar')}</div>`+fld('عدد الطلاب','stC','number',s?s.students:''),()=>{
-    const nm=v('stN').trim();if(!nm){toast('اكتب اسم المرحلة','bad');return false}
-    const o={name:nm,section:rad('stSec')||'ar',students:n(v('stC'))};
-    s?Object.assign(s,o):db.stages.push({id:uid(),...o});save('تم الحفظ')});
+function stKpis(){const A=sum(db.stages,stAr),L=sum(db.stages,stLg);return kpi('users','إجمالي الطلاب',fmt(A+L))+kpi('users','قسم عربي',fmt(A),'','cy')+kpi('users','قسم لغات',fmt(L),'','warn')}
+function stageAdd(){
+  db.stages.push({id:uid(),name:'',ar:0,lang:0});save();
+  setTimeout(()=>{const r=document.querySelectorAll('.stn');r.length&&r[r.length-1].focus()},60);
+}
+function stageEdit(id,k,el){   // تعديل مباشر في الجدول والإجمالي بيتحسب لوحده
+  const x=db.stages.find(r=>r.id===id);if(!x)return;
+  if(x.ar===undefined&&x.lang===undefined){x.ar=stAr(x);x.lang=stLg(x);delete x.section;delete x.students}
+  x[k]=k==='name'?el.value:n(el.value);
+  const t=$('#stT_'+id);if(t)t.textContent=fmt(n(x.ar)+n(x.lang));
+  const A=sum(db.stages,stAr),L=sum(db.stages,stLg);
+  $('#stFA').textContent=fmt(A);$('#stFL').textContent=fmt(L);$('#stFT').textContent=fmt(A+L);$('#stKp').innerHTML=stKpis();
+  window.cloudSync&&cloudSync();
+}
+function fixStages(){   // ترحيل المراحل القديمة (سطر لكل قسم) لشكل واحد: عربي + لغات
+  const old=x=>x.ar===undefined&&x.lang===undefined,legacy=db.stages.filter(old);
+  if(!legacy.length)return;
+  const keep=db.stages.filter(x=>!old(x)),by={};keep.forEach(x=>by[x.name]=x);
+  legacy.forEach(x=>{const g=by[x.name];
+    if(g){g.ar=n(g.ar)+stAr(x);g.lang=n(g.lang)+stLg(x)}
+    else{const o={id:x.id,name:x.name,ar:stAr(x),lang:stLg(x)};by[x.name]=o;keep.push(o)}});
+  db.stages=keep;window.cloudSync&&cloudSync();
 }
 function lang2Modal(id){
   const s=id?db.lang2.find(x=>x.id===id):null;
@@ -701,7 +735,7 @@ function lang2Modal(id){
 let BK={sel:'',name:'',ents:[]};
 function bkPick(val){
   BK={sel:val,name:'',ents:[]};
-  if(val.startsWith('s:')){const s=db.subjects.find(x=>x.id===val.slice(2));BK.name=s?s.name:'';BK.ents=db.stages.map(x=>({label:`${x.name} - ${SEC[x.section]}`,cnt:n(x.students)}))}
+  if(val.startsWith('s:')){const s=db.subjects.find(x=>x.id===val.slice(2));BK.name=s?s.name:'';BK.ents=db.stages.filter(x=>(x.name||'').trim()).flatMap(x=>[['عربي',stAr(x)],['لغات',stLg(x)]].filter(a=>a[1]>0).map(a=>({label:`${x.name} - ${a[0]}`,cnt:a[1]})))}
   else if(val.startsWith('l:')){const lg=val.slice(2);BK.name='اللغة الثانية '+lg;BK.ents=db.lang2.filter(x=>x.lang===lg).map(x=>({label:`${x.stage} - ${SEC[x.section]}`,cnt:n(x.students)}))}
   $('#bkEnt').innerHTML=BK.ents.length?`<label class="chk"><input type="checkbox" checked onchange="document.querySelectorAll('.bke').forEach(c=>c.checked=this.checked)"><span>تحديد الكل</span></label>`+BK.ents.map((e,i)=>`<label class="chk"><input type="checkbox" class="bke" value="${i}" checked><span>${esc(e.label)} <b>(${e.cnt} طالب)</b></span></label>`).join(''):(val?'<div class="emp" style="padding:8px">مفيش مراحل مسجلة للمادة دي</div>':'');
 }
@@ -817,7 +851,7 @@ function saleXModal(id,pid){
     if(s){Object.assign(s,o);save('تم التعديل');return}
     const mode=rad('xPay')||'full',paid=mode==='full'?t:mode==='due'?0:Math.min(t,n(v('xPa')));
     const rec={id:uid(),pays:[],paid:c?0:paid,...o};db.sales.push(rec);
-    if(c&&paid>0)db.payments.push({id:uid(),clientId:SS.cl,date:o.date,amount:paid,note:'دفعة مع بيع: '+o.name});
+    if(c&&paid>0)db.payments.push({id:uid(),clientId:SS.cl,date:o.date,amount:paid,note:'دفعة مع بيع: '+o.name,forId:rec.id});
     save('تم حفظ فاتورة البيع');
   });
   xInfo();xCalc();
@@ -1032,7 +1066,7 @@ function onErr(err){
 }
 function start(){
   stop();let loaded=0;
-  const done=()=>{loaded++;if(loaded===TOTAL){ready=true;view('app');if(state.view==='edit')state.view='inv';render()}};
+  const done=()=>{loaded++;if(loaded===TOTAL){ready=true;window.fixStages&&fixStages();view('app');if(state.view==='edit')state.view='inv';render()}};
   COLS.forEach(c=>{
     let first=true;
     unsubs.push(onSnapshot(collection(fs,'shops','alamin',c),snap=>{
